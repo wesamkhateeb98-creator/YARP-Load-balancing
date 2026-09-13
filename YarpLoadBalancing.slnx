@@ -1,0 +1,6 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Products/Products.csproj" />
+    <Project Path="src/YarpGateway/YarpGateway.csproj" />
+  </Folder>
+</Solution>

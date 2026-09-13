@@ -1,0 +1,46 @@
+# Build output
+[Bb]in/
+[Oo]bj/
+[Oo]ut/
+artifacts/
+
+# Demo runtime state written by scripts/start-demo.*
+.run/
+
+# Visual Studio / Rider / VS Code
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.DotSettings.user
+
+# NuGet
+*.nupkg
+*.snupkg
+packages/
+.nuget/
+
+# Test and coverage output
+[Tt]est[Rr]esult*/
+coverage*.json
+coverage*.xml
+*.coverage
+*.trx
+
+# Logs and temp files
+*.log
+*.tmp
+*.pid
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Local secrets — never commit
+appsettings.Local.json
+*.local.json
+secrets.json

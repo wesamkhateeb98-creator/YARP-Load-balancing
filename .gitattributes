@@ -1,0 +1,28 @@
+# Normalise line endings on commit, let git decide on checkout.
+* text=auto
+
+# Shell scripts must keep LF or they fail on Linux and macOS.
+*.sh text eol=lf
+
+# Windows scripts must keep CRLF.
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# Source and config
+*.cs      text diff=csharp
+*.csproj  text
+*.slnx    text
+*.json    text
+*.md      text
+*.yml     text
+*.yaml    text
+
+# Binary assets
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.dll binary
+*.exe binary
