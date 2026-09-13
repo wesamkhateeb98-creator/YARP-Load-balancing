@@ -4,6 +4,14 @@
 # Shell scripts must keep LF or they fail on Linux and macOS.
 *.sh text eol=lf
 
+# Docker builds and runs on Linux. CRLF breaks multi-line RUN instructions and any
+# shell embedded in compose, so pin these to LF regardless of the host platform.
+Dockerfile       text eol=lf
+*.Dockerfile     text eol=lf
+.dockerignore    text eol=lf
+docker-compose*.yml text eol=lf
+.env             text eol=lf
+
 # Windows scripts must keep CRLF.
 *.ps1 text eol=crlf
 *.cmd text eol=crlf

@@ -1,0 +1,138 @@
+name: yarp-load-balancing
+
+# Five identical Products instances plus the YARP gateway.
+#
+#   docker compose up -d --build          start everything
+#   docker compose --profile tools run --rm loadtest
+#                                         fire REQUESTS calls, print the distribution
+#   docker compose down                   stop and remove
+#
+# Switch the load balancing algorithm in .env (LB_POLICY), then:
+#   docker compose up -d gateway
+
+x-products: &products
+  build:
+    context: .
+    dockerfile: src/Products/Dockerfile
+  image: yarp-load-balancing/products:1.0.0
+  restart: unless-stopped
+  networks: [yarp]
+
+x-depends-on-products: &depends-on-products
+  products-5000: { condition: service_healthy }
+  products-5001: { condition: service_healthy }
+  products-5002: { condition: service_healthy }
+  products-5003: { condition: service_healthy }
+  products-5004: { condition: service_healthy }
+
+services:
+  # --- backend instances ------------------------------------------------------
+  # Every instance listens on 8080 inside its container and is published on a
+  # distinct host port, so the 5000-5004 story holds from the host's point of view.
+  # Instance__Name is what the service reports as its id; without it each container
+  # would derive its identity from the container port and all five would look alike.
+
+  products-5000:
+    <<: *products
+    container_name: products-5000
+    environment:
+      Instance__Name: products-5000
+    ports: ["5000:8080"]
+
+  products-5001:
+    <<: *products
+    container_name: products-5001
+    environment:
+      Instance__Name: products-5001
+    ports: ["5001:8080"]
+
+  products-5002:
+    <<: *products
+    container_name: products-5002
+    environment:
+      Instance__Name: products-5002
+      # Set PRODUCTS_5002_LATENCY_MS in .env to slow this one instance down and
+      # watch load-aware policies (LeastRequests, PowerOfTwoChoices) route around it.
+      Instance__LatencyMs: ${PRODUCTS_5002_LATENCY_MS:-0}
+    ports: ["5002:8080"]
+
+  products-5003:
+    <<: *products
+    container_name: products-5003
+    environment:
+      Instance__Name: products-5003
+    ports: ["5003:8080"]
+
+  products-5004:
+    <<: *products
+    container_name: products-5004
+    environment:
+      Instance__Name: products-5004
+    ports: ["5004:8080"]
+
+  # --- gateway ----------------------------------------------------------------
+
+  gateway:
+    build:
+      context: .
+      dockerfile: src/YarpGateway/Dockerfile
+    image: yarp-load-balancing/gateway:1.0.0
+    container_name: yarp-gateway
+    restart: unless-stopped
+    networks: [yarp]
+    ports: ["8000:8080"]
+    environment:
+      # appsettings.json binds Kestrel to localhost:8000 for the local workflow.
+      # Inside a container that listens on loopback only, so the published port
+      # would never receive traffic. Rebind to every interface on 8080.
+      Kestrel__Endpoints__Gateway__Url: http://+:8080
+
+      # The algorithm under test. Everything else about the cluster - health
+      # checks, destination weights - still comes from appsettings.json.
+      ReverseProxy__Clusters__products-cluster__LoadBalancingPolicy: ${LB_POLICY:-RoundRobin}
+
+      # Destinations resolve by compose service name on the shared network,
+      # replacing the http://localhost:500X/ addresses used outside Docker.
+      ReverseProxy__Clusters__products-cluster__Destinations__products-5000__Address: http://products-5000:8080/
+      ReverseProxy__Clusters__products-cluster__Destinations__products-5001__Address: http://products-5001:8080/
+      ReverseProxy__Clusters__products-cluster__Destinations__products-5002__Address: http://products-5002:8080/
+      ReverseProxy__Clusters__products-cluster__Destinations__products-5003__Address: http://products-5003:8080/
+      ReverseProxy__Clusters__products-cluster__Destinations__products-5004__Address: http://products-5004:8080/
+    depends_on: *depends-on-products
+
+  # --- distribution test ------------------------------------------------------
+  # Not started by `docker compose up`; it belongs to the "tools" profile.
+  #   docker compose --profile tools run --rm loadtest
+  #   REQUESTS=100 docker compose --profile tools run --rm loadtest
+
+  loadtest:
+    image: curlimages/curl:8.11.1
+    profiles: ["tools"]
+    networks: [yarp]
+    depends_on:
+      gateway: { condition: service_healthy }
+    environment:
+      REQUESTS: ${REQUESTS:-25}
+      TARGET: http://gateway:8080/products
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        hits=$$(mktemp)
+        i=1
+        while [ "$$i" -le "$$REQUESTS" ]; do
+          id=$$(curl -fsS -o /dev/null -D - "$$TARGET" 2>/dev/null \
+                | tr -d '\r' \
+                | awk 'tolower($$1) == "x-instance-id:" { print $$2 }')
+          id=$${id:-ERROR}
+          printf '%4d  ->  %s\n' "$$i" "$$id"
+          echo "$$id" >> "$$hits"
+          i=$$((i + 1))
+        done
+        echo
+        echo "Distribution over $$REQUESTS requests:"
+        sort "$$hits" | uniq -c \
+          | awk -v total="$$REQUESTS" '{ printf "  %-16s %4d  (%5.1f%%)\n", $$2, $$1, 100 * $$1 / total }'
+
+networks:
+  yarp:
+    driver: bridge

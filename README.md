@@ -9,6 +9,7 @@
   <img alt=".NET 10" src="https://img.shields.io/badge/.NET-10.0-512BD4?logo=dotnet&logoColor=white">
   <img alt="YARP 2.3.0" src="https://img.shields.io/badge/YARP-2.3.0-0078D4">
   <img alt="C#" src="https://img.shields.io/badge/C%23-13-239120?logo=csharp&logoColor=white">
+  <img alt="Docker Compose" src="https://img.shields.io/badge/Docker-Compose%20v2-2496ED?logo=docker&logoColor=white">
   <img alt="Platform" src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey">
 </p>
 
@@ -35,7 +36,7 @@ Five identical instances of a minimal-API `Products` service run on ports **5000
 
 A separate **`YarpGateway`** project listens on port **8000** and reverse-proxies `/products` across all five, rewriting the path to `/api/products` on the way through. Active health checks probe `/health` every 10 seconds and evict an instance after two consecutive failures, so stopping a backend is a first-class part of the demo rather than a crash.
 
-The load-balancing policy lives in `appsettings.json` and is **hot-reloadable** — change one string, save, and the next request uses the new algorithm with no restart.
+The whole thing runs under **Docker Compose** — five backend containers, the gateway, and a throwaway load-test container. The load-balancing algorithm is a single value in [`.env`](.env): change it, re-create the gateway, and compare the distribution. Running the projects directly with the .NET SDK still works and adds live config hot-reload; both paths are covered below.
 
 ```mermaid
 flowchart LR
@@ -73,13 +74,17 @@ YARP-Load-balancing/
 │  ├─ Products/                         Minimal-API backend, run 5× on 5000-5004
 │  │  ├─ Models/                        Product, InstanceInfo, ProductsResponse
 │  │  ├─ Services/                      Catalogue + instance identity resolution
-│  │  └─ Program.cs                     GET /api/products, GET /health
+│  │  ├─ Program.cs                     GET /api/products, GET /health
+│  │  └─ Dockerfile                     Multi-stage build, non-root, HEALTHCHECK
 │  └─ YarpGateway/                      The reverse proxy, :8000
 │     ├─ LoadBalancing/                 Custom WeightedRoundRobin policy
 │     ├─ appsettings.json               Routes, cluster, destinations, policy
-│     └─ Program.cs                     AddReverseProxy + GET /gateway/clusters
+│     ├─ Program.cs                     AddReverseProxy + GET /gateway/clusters
+│     └─ Dockerfile                     Multi-stage build, non-root, HEALTHCHECK
 ├─ docs/algorithms/                     One deep-dive per algorithm
-└─ scripts/                             start / stop / test, PowerShell + Bash
+├─ docker-compose.yml                   5 backends + gateway + loadtest profile
+├─ .env                                 Algorithm switch, request count, latency knob
+└─ .dockerignore                        Keeps the build context minimal
 ```
 
 **Endpoints**
@@ -109,61 +114,41 @@ Every algorithm below is documented in depth — internals, a Mermaid flow diagr
 
 ## How to Run the Demo
 
+Everything runs in Docker: five backend containers, the gateway, and a throwaway load-test container. No .NET SDK required on your machine.
+
 ### Prerequisites
 
-- [.NET SDK 10.0](https://dotnet.microsoft.com/download) or later — verify with `dotnet --version`
+- [Docker](https://docs.docker.com/get-docker/) with Compose v2 — verify with `docker compose version`
+- Ports **5000–5004** and **8000** free on the host
 - `curl` (bundled with Windows 10+, macOS and Linux), or Postman
-- Ports **5000–5004** and **8000** free
 
-### 1. Clone and build
+### 1. Clone and start
 
 ```bash
-git clone <your-fork-url> YARP-Load-balancing
+git clone https://github.com/wesamkhateeb98-creator/YARP-Load-balancing.git
 cd YARP-Load-balancing
-dotnet build YarpLoadBalancing.slnx -c Release
+docker compose up -d --build
 ```
 
-### 2. Start everything
-
-The scripts launch all six processes detached, write their logs to `.run/*.log`, record the PIDs, and wait until the gateway is actually serving traffic before returning.
-
-**Windows (PowerShell):**
-
-```powershell
-./scripts/start-demo.ps1
-```
-
-**Linux / macOS (Bash):**
+Compose builds both images, starts the five `Products` containers, waits until each one reports healthy, then starts the gateway. First build pulls the .NET SDK and runtime images, so expect a few minutes; subsequent builds are cached.
 
 ```bash
-chmod +x scripts/*.sh
-./scripts/start-demo.sh
+docker compose ps
 ```
 
-<details>
-<summary><strong>Or start each process by hand</strong> — six terminals, no scripts</summary>
-
-Terminals 1–5, one per instance:
-
-```bash
-dotnet run --project src/Products/Products.csproj -c Release -- --urls http://localhost:5000
-dotnet run --project src/Products/Products.csproj -c Release -- --urls http://localhost:5001
-dotnet run --project src/Products/Products.csproj -c Release -- --urls http://localhost:5002
-dotnet run --project src/Products/Products.csproj -c Release -- --urls http://localhost:5003
-dotnet run --project src/Products/Products.csproj -c Release -- --urls http://localhost:5004
+```
+NAME             STATUS                    PORTS
+products-5000    Up 30 seconds (healthy)   0.0.0.0:5000->8080/tcp
+products-5001    Up 30 seconds (healthy)   0.0.0.0:5001->8080/tcp
+products-5002    Up 30 seconds (healthy)   0.0.0.0:5002->8080/tcp
+products-5003    Up 30 seconds (healthy)   0.0.0.0:5003->8080/tcp
+products-5004    Up 30 seconds (healthy)   0.0.0.0:5004->8080/tcp
+yarp-gateway     Up 18 seconds (healthy)   0.0.0.0:8000->8080/tcp
 ```
 
-Terminal 6, the gateway:
+Each container listens on **8080** internally and is published on its own host port, so the 5000–5004 story holds from outside. Inside the Docker network the gateway reaches the backends by service name — `http://products-5000:8080/` — which is exactly what [`docker-compose.yml`](docker-compose.yml) overrides on the cluster's destinations.
 
-```bash
-dotnet run --project src/YarpGateway/YarpGateway.csproj -c Release -- --urls http://localhost:8000
-```
-
-Each instance derives its own ID from the port it bound to, so no extra configuration is needed. Visual Studio and Rider users can pick the `products-5000` … `products-5004` launch profiles instead.
-
-</details>
-
-### 3. Send a request through the gateway
+### 2. Send a request through the gateway
 
 ```bash
 curl -i http://localhost:8000/products
@@ -177,10 +162,10 @@ X-Instance-Id: products-5000
 {
   "servedBy": {
     "id": "products-5000",
-    "host": "WESAM",
-    "port": 5000,
-    "processId": 25408,
-    "startedAtUtc": "2026-09-13T08:53:27.5461506+00:00"
+    "host": "3f2a91c4e8d7",
+    "port": 8080,
+    "processId": 1,
+    "startedAtUtc": "2026-09-13T09:41:12.4180000+00:00"
   },
   "products": [
     { "id": 1, "name": "Mechanical Keyboard", "category": "Peripherals", "price": 129.99, "stockQuantity": 42 },
@@ -190,33 +175,15 @@ X-Instance-Id: products-5000
 }
 ```
 
-The `servedBy` block and the `X-Instance-Id` header are the whole point — they name the instance that handled this specific request.
+The `servedBy` block and the `X-Instance-Id` header name the instance that handled this specific request — that is the whole point of the demo. Under Docker, `host` is the container ID and `port` is the container-internal 8080 for every instance; the identity that distinguishes them is `id`, set from `Instance__Name` in compose.
 
-### 4. Watch the load balancing
+### 3. Watch the load balancing
 
-Fire a batch of requests and count where they landed.
-
-**PowerShell:**
-
-```powershell
-./scripts/test-load-balancing.ps1 -Requests 25
-```
-
-**Bash:**
+A `loadtest` container in the `tools` profile fires a batch of requests and prints the distribution. It is not started by `docker compose up`:
 
 ```bash
-./scripts/test-load-balancing.sh 25
+docker compose --profile tools run --rm loadtest
 ```
-
-**Or a one-liner, no scripts:**
-
-```bash
-for i in $(seq 1 25); do
-  curl -s http://localhost:8000/products | grep -o '"id":"products-[0-9]*"'
-done | sort | uniq -c
-```
-
-Under the shipped `RoundRobin` policy the output is a clean, repeating cycle. The *starting* instance depends on the internal ordering of the destination list rather than on the order in `appsettings.json`, so your first line may differ — the cycle and the even split will not:
 
 ```
    1  ->  products-5000
@@ -228,77 +195,139 @@ Under the shipped `RoundRobin` policy the output is a clean, repeating cycle. Th
    ...
 
 Distribution over 25 requests:
-Instance       Hits  Share
-products-5000     5  20.0%
-products-5001     5  20.0%
-products-5002     5  20.0%
-products-5003     5  20.0%
-products-5004     5  20.0%
+  products-5000       5  ( 20.0%)
+  products-5001       5  ( 20.0%)
+  products-5002       5  ( 20.0%)
+  products-5003       5  ( 20.0%)
+  products-5004       5  ( 20.0%)
 ```
 
-### 5. Switch the algorithm without restarting
+Change the request count with `REQUESTS`, either in [`.env`](.env) or inline:
 
-Open [`src/YarpGateway/appsettings.json`](src/YarpGateway/appsettings.json) and change one string:
-
-```json
-"products-cluster": {
-  "LoadBalancingPolicy": "PowerOfTwoChoices"
-}
+```bash
+REQUESTS=100 docker compose --profile tools run --rm loadtest
 ```
 
-Save the file. `LoadFromConfig` watches the section and re-applies the cluster to live traffic — no restart, no dropped requests. Confirm what the gateway actually loaded:
+Under the default `RoundRobin` policy the cycle is exact. The *starting* instance depends on the internal ordering of the destination list rather than the order in `appsettings.json`, so your first line may differ — the cycle and the even split will not.
+
+**Or a one-liner from the host, no containers:**
+
+```bash
+for i in $(seq 1 25); do
+  curl -s http://localhost:8000/products | grep -o '"id":"products-[0-9]*"'
+done | sort | uniq -c
+```
+
+### 4. Switch the algorithm
+
+Edit `LB_POLICY` in [`.env`](.env):
+
+```dotenv
+LB_POLICY=PowerOfTwoChoices
+```
+
+Then re-create just the gateway — roughly two seconds, the backends keep running:
+
+```bash
+docker compose up -d gateway
+```
+
+Confirm what it actually loaded, then re-run step 3 and compare:
 
 ```bash
 curl -s http://localhost:8000/gateway/clusters
 ```
 
-Then re-run step 4 and compare. Valid values: `RoundRobin`, `PowerOfTwoChoices`, `Random`, `LeastRequests`, `FirstAlphabetical`, and the custom `WeightedRoundRobin`.
+Valid values: `RoundRobin`, `PowerOfTwoChoices`, `Random`, `LeastRequests`, `FirstAlphabetical`, and the custom `WeightedRoundRobin`. Compose injects this as an environment variable that overrides the cluster's `LoadBalancingPolicy`; everything else about the cluster — health checks, destination weights — still comes from [`src/YarpGateway/appsettings.json`](src/YarpGateway/appsettings.json).
 
 > **Two results worth reproducing**, because they contradict the names: under **`LeastRequests`**, 15 *sequential* requests all land on one instance — with no concurrency every in-flight count ties at zero, so the strict comparison always returns the first destination. Under **`FirstAlphabetical`**, every request lands on `products-5000` by design; it is a failover policy, not a balancing one. Both are explained in their deep dives.
 
-### 6. Test health-check failover
+### 5. Test health-check failover
 
-Kill one instance and watch YARP route around it:
-
-```bash
-# Find and stop the instance on port 5002
-# Windows:  Get-NetTCPConnection -LocalPort 5002 | Select-Object -Expand OwningProcess | Stop-Process -Force
-# Linux:    kill $(lsof -t -i:5002)
-
-curl -s http://localhost:8000/gateway/clusters   # products-5002 -> "Unhealthy" after two probe cycles
-./scripts/test-load-balancing.sh 20              # traffic now splits four ways
-```
-
-Restart it and the next probe returns it to the rotation automatically.
-
-### 7. See a load-aware policy actually react
-
-Load-aware policies need concurrency and uneven cost to differentiate. Start one instance deliberately slow:
+Stop one backend and watch YARP route around it:
 
 ```bash
-dotnet run --project src/Products/Products.csproj -c Release -- \
-  --urls http://localhost:5002 --Instance:LatencyMs 400
+docker compose stop products-5002
+
+curl -s http://localhost:8000/gateway/clusters      # products-5002 -> "Unhealthy" after two probe cycles
+docker compose --profile tools run --rm loadtest    # traffic now splits four ways, 25% each
 ```
 
-Switch the cluster to `LeastRequests`, then drive parallel load:
+Bring it back and the next probe returns it to the rotation automatically, with no gateway restart:
+
+```bash
+docker compose start products-5002
+```
+
+### 6. See a load-aware policy actually react
+
+Load-aware policies need concurrency *and* uneven request cost to differentiate. Slow one instance down via [`.env`](.env):
+
+```dotenv
+LB_POLICY=LeastRequests
+PRODUCTS_5002_LATENCY_MS=400
+```
+
+```bash
+docker compose up -d gateway products-5002
+```
+
+Then drive parallel load — a single sequential loop will not show anything:
+
+```bash
+docker compose --profile tools run --rm \
+  -e REQUESTS=60 loadtest
+```
 
 ```powershell
-1..50 | ForEach-Object -Parallel {
+# Or concurrently from the host, which is what actually exercises the policy
+1..60 | ForEach-Object -Parallel {
     (Invoke-RestMethod 'http://localhost:8000/products').servedBy.id
-} -ThrottleLimit 10 | Group-Object | Sort-Object Name
+} -ThrottleLimit 12 | Group-Object | Sort-Object Name
 ```
 
 `products-5002` accumulates in-flight requests and receives a visibly smaller share.
 
-### 8. Stop the demo
-
-```powershell
-./scripts/stop-demo.ps1
-```
+### 7. Logs and shutdown
 
 ```bash
-./scripts/stop-demo.sh
+docker compose logs -f gateway          # YARP routing and health-check decisions
+docker compose logs -f products-5000    # a single backend
+
+docker compose down                     # stop and remove containers + network
+docker compose down --rmi local -v      # also remove the images built here
 ```
+
+<details>
+<summary><strong>Running without Docker</strong> — .NET SDK 10 directly on the host</summary>
+
+The projects run standalone; only the destination addresses differ, and `appsettings.json` already points at `http://localhost:500X/`.
+
+```bash
+dotnet build YarpLoadBalancing.slnx -c Release
+```
+
+Terminals 1–5, one per instance:
+
+```bash
+dotnet run --project src/Products/Products.csproj -c Release -- --urls http://localhost:5000
+dotnet run --project src/Products/Products.csproj -c Release -- --urls http://localhost:5001
+dotnet run --project src/Products/Products.csproj -c Release -- --urls http://localhost:5002
+dotnet run --project src/Products/Products.csproj -c Release -- --urls http://localhost:5003
+dotnet run --project src/Products/Products.csproj -c Release -- --urls http://localhost:5004
+```
+
+Terminal 6, the gateway — it binds `http://localhost:8000` from its own `Kestrel` settings:
+
+```bash
+dotnet run --project src/YarpGateway/YarpGateway.csproj -c Release
+```
+
+Each instance derives its ID from the port it bound to, so no extra configuration is needed. Visual Studio and Rider users can pick the `products-5000` … `products-5004` launch profiles instead.
+
+Outside Docker the policy is **hot-reloadable**: edit `LoadBalancingPolicy` in [`src/YarpGateway/appsettings.json`](src/YarpGateway/appsettings.json), save, and `LoadFromConfig` re-applies it to live traffic with no restart and no dropped requests.
+
+</details>
 
 ### Using Postman
 

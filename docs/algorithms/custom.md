@@ -285,7 +285,7 @@ public void Distributes_traffic_in_proportion_to_weight()
 curl -s http://localhost:8000/gateway/clusters
 
 # 16 requests = two full periods -> expect 6 / 2 / 2 / 4 / 2
-./scripts/test-load-balancing.sh 16
+docker compose --profile tools run --rm -e REQUESTS=16 loadtest
 ```
 
 ---

@@ -176,6 +176,19 @@ app.Run();
 
 To make the policy visibly react, slow one backend down. The `Products` service reads an optional latency knob, so starting a single instance with it is enough:
 
+Under Docker, set it in `.env` and re-create that one container:
+
+```dotenv
+LB_POLICY=LeastRequests
+PRODUCTS_5002_LATENCY_MS=400
+```
+
+```bash
+docker compose up -d gateway products-5002
+```
+
+Running directly with the .NET SDK, pass it on the command line:
+
 ```bash
 dotnet run --project src/Products/Products.csproj -- \
   --urls http://localhost:5002 --Instance:LatencyMs 400
